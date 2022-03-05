@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/akm/delparser/ast"
@@ -149,11 +150,21 @@ func (p *parser) parseSectionBlocks() ([]ast.FileSectionBlock, error) {
 			}
 			blocks = append(blocks, typeBlock)
 		} else if p.seesWord("var") {
-			varBlock, err := p.parseVarBlock()
+			varBlock, err := p.parseVarBlock("var")
 			if err != nil {
 				return nil, err
 			}
 			blocks = append(blocks, varBlock)
+		} else if p.seesWord("threadvar") {
+			varBlock, err := p.parseVarBlock("threadvar")
+			if err != nil {
+				return nil, err
+			}
+			threadVarBlock := make(ast.ThreadVarBlock, len(varBlock))
+			for i, v := range varBlock {
+				threadVarBlock[i] = v
+			}
+			blocks = append(blocks, threadVarBlock)
 		} else if p.seesWord("function") {
 			if err := p.eatWord("function"); err != nil {
 				return nil, err
@@ -192,27 +203,11 @@ func (p *parser) parseTypeBlock() (ast.TypeBlock, error) {
 		if err := p.eat('='); err != nil {
 			return nil, err
 		}
-		if p.seesWord("class") {
-			class := &ast.Class{Name: identifier}
-			if err := classProc(class)(p); err != nil {
-				return nil, err
-			}
-			res = append(res, class)
-		} else if p.seesWord("record") {
-			record := &ast.Record{Name: identifier}
-			if err := recordProc(record)(p); err != nil {
-				return nil, err
-			}
-			res = append(res, record)
-		} else if p.seesWords("packed", "array") {
-			array := &ast.Array{Name: identifier}
-			if err := arrayProc(array)(p); err != nil {
-				return nil, err
-			}
-			res = append(res, array)
-		} else {
-			return nil, errors.Errorf("expected type declaration, got %+v", p.peekToken())
+		expr, err := p.parseTypeExpr()
+		if err != nil {
+			return nil, err
 		}
+		res = append(res, &ast.Type{Name: identifier, Expr: expr})
 		if p.sees(tokenWord) && p.seesReservedWord() {
 			break
 		}
@@ -220,8 +215,44 @@ func (p *parser) parseTypeBlock() (ast.TypeBlock, error) {
 	return res, nil
 }
 
-func (p *parser) parseVarBlock() (ast.VarBlock, error) {
-	if err := p.eatWord("var"); err != nil {
+func (p *parser) parseTypeExpr() (ast.TypeExpr, error) {
+	if p.seesWord("class") {
+		expr := &ast.ClassExpr{}
+		if err := classProc(expr)(p); err != nil {
+			return nil, err
+		}
+		return expr, nil
+	} else if p.seesWord("record") {
+		expr := &ast.RecordExpr{}
+		if err := recordProc(expr)(p); err != nil {
+			return nil, err
+		}
+		return expr, nil
+	} else if p.seesWords("packed", "array") {
+		expr := &ast.ArrayExpr{}
+		if err := arrayProc(expr)(p); err != nil {
+			return nil, err
+		}
+		if err := p.eat(';'); err != nil {
+			return nil, err
+		}
+		return expr, nil
+	} else if p.sees('(') {
+		expr := &ast.EnumExpr{}
+		if err := enumProc(expr)(p); err != nil {
+			return nil, err
+		}
+		if err := p.eat(';'); err != nil {
+			return nil, err
+		}
+		return expr, nil
+	} else {
+		return nil, errors.Errorf("expected type expression, got %+v", p.peekToken())
+	}
+}
+
+func (p *parser) parseVarBlock(word string) (ast.VarBlock, error) {
+	if err := p.eatWord(word); err != nil {
 		return nil, err
 	}
 	var vars ast.VarBlock
@@ -256,21 +287,78 @@ func (p *parser) parseParameters(endToken tokenType) (ast.Parameters, error) {
 }
 
 func (p *parser) parseVariableDeclaration() (*ast.Variable, error) {
-	name, err := p.identifier("field name")
+	names, err := p.parseSeparatedString(',', "variable name")
 	if err != nil {
 		return nil, err
 	}
+	r := &ast.Variable{Names: names}
 	if err := p.eat(':'); err != nil {
 		return nil, err
 	}
-	typ, err := p.qualifiedIdentifier("type name")
-	if err != nil {
-		return nil, err
+	if p.seesWords("packed", "array") {
+		arrayExpr := &ast.ArrayExpr{}
+		if err := arrayProc(arrayExpr)(p); err != nil {
+			return nil, err
+		}
+		r.Type = arrayExpr
+	} else if p.sees('(') {
+		enumExpr := &ast.EnumExpr{}
+		if err := enumProc(enumExpr)(p); err != nil {
+			return nil, err
+		}
+		r.Type = enumExpr
+	} else {
+		typ, err := p.qualifiedIdentifier("type name")
+		if err != nil {
+			return nil, err
+		}
+		if p.sees('[') {
+			err := p.startEndToken('[', ']', func() error {
+				token := p.nextToken()
+				if token.tokenType != tokenInt {
+					return errors.Errorf("expected int, got %+v", token)
+				}
+				l, err := strconv.Atoi(token.text)
+				if err != nil {
+					return err
+				}
+				r.Length = l
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
+		r.Type = ast.TypeName(typ)
+	}
+	if p.seesWord("absolute") {
+		if err := p.eatWord("absolute"); err != nil {
+			return nil, err
+		}
+		abs, err := p.identifier("absolute reference name")
+		if err != nil {
+			return nil, err
+		}
+		r.Absolute = abs
+	}
+
+	if p.sees('=') {
+		if err := p.eat('='); err != nil {
+			return nil, err
+		}
+		t := p.nextToken()
+		switch t.tokenType {
+		case tokenWord, tokenInt, tokenReal, tokenString:
+			// OK
+		default:
+			return nil, errors.Errorf("expected parameter default value, got %+v", t)
+		}
+		r.Default = t.text
 	}
 	if err := p.eat(';'); err != nil {
 		return nil, err
 	}
-	return &ast.Variable{Name: name, Type: typ}, nil
+	return r, nil
 }
 
 func (p *parser) parseProperty() (*ast.Property, error) {
@@ -278,7 +366,7 @@ func (p *parser) parseProperty() (*ast.Property, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &ast.Property{Variable: ast.Variable{Name: name}}
+	res := &ast.Property{Variable: ast.Variable{Names: []string{name}}}
 	if err := propertyProc(res)(p); err != nil {
 		return nil, err
 	}
@@ -330,6 +418,14 @@ func (p *parser) seesWords(texts ...string) bool {
 func (p *parser) seesReservedWord() bool {
 	t := p.peekToken()
 	return t.tokenType == tokenWord && isReservedWord(strings.ToLower(t.text))
+}
+
+func (p *parser) take(typ tokenType) (*token, error) {
+	t := p.nextToken()
+	if t.tokenType != typ {
+		return nil, p.tokenError(t, typ.String())
+	}
+	return &t, nil
 }
 
 func (p *parser) eat(typ tokenType) error {

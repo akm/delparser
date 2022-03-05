@@ -82,7 +82,7 @@ func TestIncompleteTypeBlock(t *testing.T) {
 	)
 	parseError(t,
 		"unit U;interface type C=class(A,B) ; implementation end.",
-		`field name expected but was token ";" at 1:36`,
+		`variable name expected but was token ";" at 1:36`,
 	)
 	parseError(t,
 		"unit U;interface type C=class(A,B end; implementation end.",
@@ -102,7 +102,7 @@ func TestIncompleteTypeBlock(t *testing.T) {
 	)
 	parseError(t,
 		"unit U;interface type C=A,B) end; implementation end.",
-		`expected type declaration, got word "A" at 1:25`,
+		`expected type expression, got word "A" at 1:25`,
 	)
 	parseError(t,
 		"unit U;interface type C class(A,B) end; implementation end.",
@@ -132,7 +132,7 @@ func TestIncompleteVarInClass(t *testing.T) {
 	)
 	parseError(t,
 		"unit U;interface type C=class :Integer; end; implementation end.",
-		`field name expected but was token ":" at 1:31`,
+		`variable name expected but was token ":" at 1:31`,
 	)
 }
 
